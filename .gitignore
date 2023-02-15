@@ -9,16 +9,16 @@ index.js
 dist
 coverage
 
-api/
-services/
-models/
-subscribers/
-migrations/
-loaders/
-utils/
-types/
-utils/*.js
-index.*
+#api/
+#services/
+#models/
+#subscribers/
+#migrations/
+#loaders/
+#utils/
+#types/
+#utils/*.js
+#index.*
 
 !src/**
 
