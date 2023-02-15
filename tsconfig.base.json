@@ -2,8 +2,9 @@
   "compilerOptions": {
     "lib": ["es5", "es6"],
     "target": "esnext",
-    "esModuleInterop": false,
+    "esModuleInterop": true,
     "module": "commonjs",
+    "allowJs": true,
     "moduleResolution": "node",
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,

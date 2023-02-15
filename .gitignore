@@ -4,11 +4,12 @@ node_modules
 .DS_store
 **/.DS_Store
 .env*
-/*.js
+index.js
 
 dist
 coverage
 
+utils/
 api/
 services/
 models/
@@ -17,6 +18,8 @@ migrations/
 loaders/
 index.*
 src/coverage/
+
+
 
 
 

@@ -1,29 +1,25 @@
 import { Router } from "express";
-import * as bodyParser from "body-parser";
 import cors from "cors";
-import { getConfigFile } from "medusa-core-utils";
+import shipRocketRoutes from "./shipping";
 
-import middlewares from "../middleware";
+import { ConfigModule } from "@medusajs/medusa";
+import { ShiprocketOptions } from "services/shiprocket-provider";
 
-const route = Router()
+const router = Router();
 
-export default (app: Router, rootDirectory: string): Router => {
-    app.use("/my-custom-route", route);
-
-    const { configModule } = getConfigFile(rootDirectory, "medusa-config") as Record<string, unknown>;
-    const { projectConfig } = configModule as { projectConfig: { store_cors: string } };
-
+export default (
+    app: Router,
+    rootDirectory: string,
+    options: ShiprocketOptions,
+    config: ConfigModule
+): Router => {
     const corsOptions = {
-        origin: projectConfig.store_cors.split(","),
-        credentials: true,
+        origin: config.projectConfig.store_cors.split(","),
+        credentials: true
     };
+    app.use("/shipping", router);
+    router.options("/shipping", cors(corsOptions));
+    shipRocketRoutes(router, options, config);
 
-    route.options("/my-custom-path", cors(corsOptions));
-    route.post(
-        "/my-custom-path",
-        cors(corsOptions),
-        bodyParser.json(),
-        middlewares.wrap(require("./custom-route-handle").default)
-    );
     return app;
-}
+};
