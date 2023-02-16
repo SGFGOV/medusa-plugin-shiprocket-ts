@@ -1,12 +1,9 @@
 import { Request, Response } from "express";
+import { CreatePickupLocationRequest } from "types/globals";
+import ShiprocketProviderService from "../../../../services/shiprocket-provider";
 
 import { response } from "../../../../utils";
-const { ShipRocket } = require("@helper");
-
-export const registerAddress = async (
-    req: Request & { shipRocket: string },
-    res: Response
-) => {
+export const registerAddress = async (req: Request, res: Response) => {
     try {
         const {
             email,
@@ -17,13 +14,17 @@ export const registerAddress = async (
             city,
             pinCode,
             state,
-            country
+            country,
+            name
         } = req.body;
 
-        const shipRocket = new ShipRocket(req.shipRocket);
+        const shipRocket = req.scope.resolve(
+            "shiprocketProviderService"
+        ) as ShiprocketProviderService;
 
-        const body = {
-            name: title,
+        const body: CreatePickupLocationRequest = {
+            pickup_location: title,
+            name,
             email,
             phone,
             address: addressLineOne,

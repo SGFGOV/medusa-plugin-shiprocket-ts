@@ -65,7 +65,7 @@ export interface Payload {
     pickup_generated: number;
     manifest_generated: number;
     pickup_scheduled_date: string;
-    pickup_booked_date: any;
+    pickup_booked_date: string;
     order_id: number;
     shipment_id: number;
     awb_code: string;
@@ -85,4 +85,50 @@ export interface AssignedDateTime {
     date: string;
     timezone_type: number;
     timezone: string;
+}
+
+export interface QuickReturnRequest {
+    order_id: string;
+    order_date: string;
+    channel_id: string;
+    pickup_customer_name: string;
+    pickup_last_name: string;
+    company_name: string;
+    pickup_address: string;
+    pickup_address_2: string;
+    pickup_city: string;
+    pickup_state: string;
+    pickup_country: string;
+    pickup_pincode: number;
+    pickup_email: string;
+    pickup_phone: string;
+    pickup_isd_code: string;
+    shipping_customer_name: string;
+    shipping_last_name: string;
+    shipping_address: string;
+    shipping_address_2: string;
+    shipping_city: string;
+    shipping_country: string;
+    shipping_pincode: number;
+    shipping_state: string;
+    shipping_email: string;
+    shipping_isd_code: string;
+    shipping_phone: number;
+    order_items: QuickOrderItem[];
+    payment_method: string;
+    total_discount: string;
+    sub_total: number;
+    length: number;
+    breadth: number;
+    height: number;
+    weight: number;
+    request_pickup: boolean;
+}
+
+export interface QuickOrderItem {
+    sku: string;
+    name: string;
+    units: number;
+    selling_price: number;
+    discount: number;
 }

@@ -1,13 +1,23 @@
-import ShiprocketProviderService from "../shiprocket-provider";
+import ShiprocketProviderService, {
+    ShiprocketResult
+} from "../shiprocket-provider";
 import { MockManager, MockRepository, IdMap } from "medusa-test-utils";
 import { dummyRequest } from "../__fixtures__/dummy";
 import logger from "../__mocks__/logger";
 import dotenv from "dotenv";
 import {
+    CreatePickupLocationRequest,
+    CreateOrderRequestOptions,
     InternationalServiceabilityOptions,
-    ServiceabilityOptions
+    ServiceabilityOptions,
+    CreateOrderResponse
 } from "types/globals";
-import { StockLocationDTO } from "@medusajs/medusa";
+import {
+    Fulfillment,
+    FulfillmentItem,
+    Item,
+    StockLocationDTO
+} from "@medusajs/medusa";
 import { orders } from "../__mocks__/order";
 dotenv.config();
 
@@ -273,6 +283,66 @@ describe("ShiprocketFullfillmentService", () => {
             });
             const addressResult = await shiprocket.getPickupAddresses();
             expect(addressResult.status).toBe(true);
+        }, 90e3);
+
+        it("test create pickup locations", async () => {
+            const testRequest: CreatePickupLocationRequest = {
+                pickup_location: IdMap.getId("test-location"),
+                name: "test" + IdMap.getId("test-location"),
+                email: "test@test.com",
+                phone: "9876543210" /** needs to be 10 digits.  */,
+                address:
+                    "123 abcdefghijklmnopqrstuvwxyz" /** must contain number */,
+                address_2: "abcdefghijklmnopqrstuvwxyz",
+                city: "mumbai",
+                state: "maharashtra",
+                country: "India",
+                pin_code: "400093"
+            };
+
+            const result = await shiprocket.createPickUpLocation(testRequest);
+            expect(result.status).toBe(true);
+            const addressResult = await shiprocket.getPickupAddresses();
+            expect(addressResult.status).toBe(true);
+            expect(
+                addressResult.data.data.shipping_address.filter(
+                    (a) => a.pickup_location == IdMap.getId("test-location")
+                ).length == 1
+            ).toBe(true);
+        }, 90e3);
+        it("test create order - domestic", async () => {
+            const order = orders.testOrderIndiaDomestic;
+            const fulfillment = {
+                location_id: IdMap.getId("test-location"),
+                provider_id: "shiprocket",
+                id: IdMap.getId("test-fulfillment")
+            } as any;
+            const result = await shiprocket.createFulfillment(
+                {
+                    id: IdMap.getId(shiprocket.fulfillmentTypes[0]),
+                    shipping_option_id: shiprocket.fulfillmentTypes[0]
+                } as any,
+                order.items.map((item) => {
+                    const fulfillmentItem: FulfillmentItem = {
+                        fulfillment_id: fulfillment.id,
+                        item_id: item.id,
+                        fulfillment: fulfillment,
+                        item: item as any,
+                        quantity: item.quantity
+                    };
+                    return fulfillmentItem;
+                }),
+                order as any,
+                fulfillment
+            );
+            result.map(async (r: ShiprocketResult) => {
+                expect(r.status).toBe(true);
+                const response = r.data as CreateOrderResponse;
+                const deleteResult = await shiprocket.deleteOrder(
+                    response.order_id
+                );
+                expect(deleteResult.status).toBe(true);
+            });
         }, 90e3);
     });
 });

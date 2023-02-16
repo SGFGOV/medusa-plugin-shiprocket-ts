@@ -1,5 +1,6 @@
 import { ConfigModule } from "@medusajs/medusa";
 import { Router } from "express";
+import { getConfigFile } from "medusa-core-utils";
 import { ShiprocketOptions } from "../services/shiprocket-provider";
 import routes from "./routes";
 
@@ -10,6 +11,14 @@ export default (
     config: ConfigModule
 ): Router => {
     const app = Router();
+
+    if (!config) {
+        const { configModule } = getConfigFile(
+            rootDirectory,
+            "medusa-config"
+        ) as Record<string, unknown>;
+        config = configModule as ConfigModule;
+    }
 
     routes(app, rootDirectory, options, config);
 

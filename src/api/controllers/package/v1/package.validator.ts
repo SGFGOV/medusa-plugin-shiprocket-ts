@@ -3,7 +3,7 @@ import {
     createPackageValidator,
     listOrValueValidator,
     packageOrderValidator
-} from "./package-validator-utilts";
+} from "./package-validator-utils";
 
 const { response } = require("@utils");
 
@@ -210,6 +210,22 @@ export function printManifests(
         const { orderIds } = req.body;
 
         listOrValueValidator(orderIds, "order Ids");
+
+        next();
+    } catch (e) {
+        response.error(res, e);
+    }
+}
+
+export function cancelShipment(
+    req: Request,
+    res: Response,
+    next: NextFunction
+) {
+    try {
+        const { shipmentIds } = req.body;
+
+        listOrValueValidator(shipmentIds, "shipment Ids");
 
         next();
     } catch (e) {

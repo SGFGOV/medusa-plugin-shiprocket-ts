@@ -1,7 +1,12 @@
 const express = require("express");
 const router = express.Router();
-
-const { packageValidator, packageController } = require("@api/package/v1");
+import {
+    packageController,
+    quickPickupController,
+    quickPickupValidator,
+    quickReturnValidator
+} from "../controllers/package/v1";
+import { packageValidator } from "../controllers/package/v1";
 
 /* GET users listing. */
 router.post(
@@ -48,10 +53,28 @@ router.post(
     packageController.printManifests
 );
 
+router.post(
+    "/quick-pickup",
+    quickPickupValidator.createQuickForwardValidator,
+    quickPickupController.quickPickupController
+);
+
+router.post(
+    "/quick-return",
+    quickReturnValidator.createQuickReturnValidator,
+    quickPickupController.quickPickupController
+);
+
 router.delete(
     "/delete-order",
     packageValidator.orderIds,
     packageController.deleteOrder
+);
+
+router.delete(
+    "/cancel-shipment",
+    packageValidator.cancelShipment,
+    packageController.cancelShipment
 );
 
 export default router;

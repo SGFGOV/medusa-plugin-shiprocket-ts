@@ -9,23 +9,40 @@ const fulfillmentTypesDomestic = [
 
 export const orders = {
     testOrderIndiaDomestic: {
-        _id: IdMap.getId("test-order"),
+        id: IdMap.getId("test-order"),
+        created_at: new Date(),
         email: "oliver@test.dk",
         billing_address: {
             first_name: "Oli",
             last_name: "Medusa",
             address_1: "testaddress",
             city: "New Delhi",
+            country: { name: "India" },
             country_code: "IN",
-            postal_code: "110011"
+            postal_code: "110011",
+            phone: "9876543210",
+            province: "Delhi"
         },
         shipping_address: {
             first_name: "Oli",
             last_name: "Medusa",
             address_1: "testaddress",
             city: "New Delhi",
+            country: { name: "India" },
             country_code: "IN",
-            postal_code: "110011"
+            postal_code: "110011",
+            phone: "9876543210",
+            province: "Delhi"
+        },
+        customer: {
+            email: "test@test.com",
+            phone: "9876543210"
+        },
+        cart: {
+            region: {
+                currency_code: "INR"
+            },
+            shipping_total: 10
         },
         items: [
             {
@@ -36,14 +53,25 @@ export const orders = {
 
                 unit_price: 123,
                 variant: {
-                    _id: IdMap.getId("can-cover"),
+                    hs_code: "3303 2200",
+                    id: IdMap.getId("can-cover"),
                     weight: 5,
-                    height: 30
+                    height: 30,
+                    length: 20,
+                    width: 30,
+                    title: "can-cover",
+                    prices: [
+                        {
+                            currency_code: "INR",
+                            amount: 123
+                        }
+                    ]
                 },
                 product: {
                     _id: IdMap.getId("validId")
                 },
                 quantity: 10,
+                discount_total: 0,
 
                 fulfilled_quantity: 0
             }
@@ -67,6 +95,7 @@ export const orders = {
         }),
         fulfillments: [
             {
+                location_id: IdMap.getId("test-location"),
                 _id: IdMap.getId("fulfillment"),
                 provider_id: "shiprocket",
                 data: {}
@@ -98,6 +127,15 @@ export const orders = {
             country_code: "US",
             postal_code: "90002"
         },
+        customer: {
+            email: "test@test.com"
+        },
+        cart: {
+            region: {
+                currency_code: "USD"
+            },
+            shipping_total: 10
+        },
         items: [
             {
                 id: IdMap.getId("existingLine"),
@@ -107,14 +145,26 @@ export const orders = {
 
                 unit_price: 123,
                 variant: {
-                    _id: IdMap.getId("can-cover"),
-                    weight: 5,
-                    height: 30
+                    hs_code: "3303 2200",
+                    id: IdMap.getId("can-cover"),
+                    prices: [
+                        {
+                            currency_code: "USD",
+                            amount: 123
+                        }
+                    ],
+                    height: 30,
+                    length: 20,
+                    width: 30,
+                    title: "can-cover",
+
+                    weight: 5
                 },
                 product: {
                     _id: IdMap.getId("validId")
                 },
                 quantity: 10,
+                discount_total: 0,
 
                 fulfilled_quantity: 0
             }
@@ -140,6 +190,7 @@ export const orders = {
             {
                 _id: IdMap.getId("fulfillment"),
                 provider_id: "shiprocket",
+                location_id: IdMap.getId("test-location"),
                 data: {}
             }
         ],

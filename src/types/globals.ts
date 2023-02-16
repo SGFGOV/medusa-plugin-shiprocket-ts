@@ -189,7 +189,7 @@ export type OrderItem = {
     hsn?: number;
 };
 
-export interface CreateRequestOptions {
+export interface CreateOrderRequestOptions {
     channel_id: number;
     order_id: string;
     order_date: string;
@@ -201,18 +201,18 @@ export interface CreateRequestOptions {
     order_items: OrderItem[];
     priceInfo: priceInfo;
     payment_method: "Prepaid" | "COD";
-    pakageInfo: dimensions;
+    packageInfo: dimensions;
 }
 
-export interface CreateResponse {
+export interface CreateOrderResponse {
     order_id: number;
     shipment_id: number;
     status: string;
     status_code: number;
     onboarding_completed_now: number;
-    awb_code: any;
-    courier_company_id: any;
-    courier_name: any;
+    awb_code: string | null;
+    courier_company_id: number | null;
+    courier_name: string | null;
 }
 
 export interface ProductOptions {
@@ -247,7 +247,7 @@ export interface ServiceabilityOptions {
     weight: number;
     height: number;
     breadth?: number;
-    length?:number;
+    length?: number;
     mode: "Surface" | "Air";
     is_return?: boolean;
 }
@@ -397,4 +397,84 @@ export interface CreatePickupLocationRequest {
     state: string;
     country: string;
     pin_code: string;
+}
+
+export interface AssignAwbResponse {
+    awb_assign_status: number;
+    response: AwbResponse;
+}
+
+export interface AwbResponse {
+    data: AwbResponseData;
+}
+
+export interface AwbResponseData {
+    courier_company_id: number;
+    awb_code: string;
+    cod: number;
+    order_id: number;
+    shipment_id: number;
+    awb_code_status: number;
+    assigned_date_time: AssignedDateTime;
+    applied_weight: number;
+    company_id: number;
+    courier_name: string;
+    child_courier_name: any;
+    pickup_scheduled_date: string;
+    routing_code: string;
+    rto_routing_code: string;
+    invoice_no: string;
+    transporter_id: string;
+    transporter_name: string;
+    shipped_by: ShippedBy;
+}
+
+export interface AssignedDateTime {
+    date: string;
+    timezone_type: number;
+    timezone: string;
+}
+
+export interface ShippedBy {
+    shipper_company_name: string;
+    shipper_address_1: string;
+    shipper_address_2: string;
+    shipper_city: string;
+    shipper_state: string;
+    shipper_country: string;
+    shipper_postcode: string;
+    shipper_first_mile_activated: number;
+    shipper_phone: string;
+    lat: string;
+    long: string;
+    shipper_email: string;
+    rto_company_name: string;
+    rto_address_1: string;
+    rto_address_2: string;
+    rto_city: string;
+    rto_state: string;
+    rto_country: string;
+    rto_postcode: string;
+    rto_phone: string;
+    rto_email: string;
+}
+
+export interface PickupResponse {
+    pickup_status: number;
+    response: PickupEntityResponse;
+}
+
+export interface PickupEntityResponse {
+    pickup_scheduled_date: string;
+    pickup_token_number: string;
+    status: number;
+    others: string;
+    pickup_generated_date: PickupGeneratedDate;
+    data: string;
+}
+
+export interface PickupGeneratedDate {
+    date: string;
+    timezone_type: number;
+    timezone: string;
 }

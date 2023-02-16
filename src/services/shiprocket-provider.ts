@@ -21,7 +21,8 @@ import {
     ReturnItem,
     StockLocationDTO,
     Item,
-    ShippingOption
+    ShippingOption,
+    MoneyAmount
 } from "@medusajs/medusa";
 import { IStockLocationService } from "@medusajs/medusa";
 import { FulfillmentService } from "medusa-interfaces";
@@ -41,19 +42,28 @@ import {
     awb_number,
     CreatePickupLocationRequest,
     CreatePickupLocationResponse,
-    CreateRequestOptions,
+    CreateOrderRequestOptions,
     CreateReturnRequestOptions,
     InternationalServiceabilityOptions,
     OrderItem,
     OrderReturnItem,
     PickupAddressesResponse,
     ProductOptions,
-    ServiceabilityOptions
+    ServiceabilityOptions,
+    CreateOrderResponse,
+    AwbResponse,
+    AssignAwbResponse
 } from "../types/globals";
-import { createPackageValidator } from "../api/controllers/package/v1/package-validator-utilts";
+import { createPackageValidator } from "../api/controllers/package/v1/package-validator-utils";
 import { ChannelSettings } from "../types/channel";
 import { COUNTRY_CODES } from "../utils/country";
-import { QuickForwardRequest } from "../types/quick-ship";
+import {
+    QuickForwardRequest,
+    QuickReturnRequest
+} from "../types/quick-response";
+import { ShipmentCreatedEvent } from "../subscribers";
+import { parse } from "node:path";
+import { arrayBuffer } from "stream/consumers";
 
 export type ShiprocketResult = {
     status: boolean;
@@ -90,6 +100,88 @@ export interface ShiprocketOptions {
 }
 
 class ShiprocketProviderService extends FulfillmentService {
+    async createShipmentFromFulfillment(
+        shipmentEvent: ShipmentCreatedEvent
+    ): Promise<ShiprocketResult[]> {
+        const order = await this.orderService.retrieve(shipmentEvent.id);
+        const methods = order.shipping_methods.filter(
+            (m) => m.shipping_option.provider_id == this.getIdentifier()
+        );
+        if (methods.length > 0) {
+            return await this.atomicPhase_(
+                async (manager: EntityManager) => {
+                    const fulfillmentRepository = manager.getCustomRepository(
+                        this.fulfillmentRepository_
+                    );
+                    try {
+                        const fulfillment = await fulfillmentRepository.findOne(
+                            shipmentEvent.fulfillment_id
+                        );
+                        const shiprocketData =
+                            fulfillment.data as unknown as ShiprocketResult[];
+                        const shiprocketAwbResponse = await this.generateAllAwb(
+                            shiprocketData
+                        );
+                        await Promise.all(shiprocketAwbResponse);
+                        const fulfillmentSaved =
+                            await fulfillmentRepository.save(fulfillment);
+                    } catch (e) {
+                        this.parseError(e);
+                    }
+                },
+                "SERIALIZABLE",
+                false
+            );
+        }
+    }
+
+    async generateAllAwb(
+        shiprocketData: ShiprocketResult[]
+    ): Promise<ShiprocketResult[]> {
+        const shiprocketCreateResponse = shiprocketData.map(
+            async (sr, index) => {
+                const createResponse = sr.data as CreateOrderResponse;
+                try {
+                    const awb = await this.generateAWB(
+                        createResponse.shipment_id
+                    );
+                    const t = shiprocketData[index];
+                    t["awb"] = (
+                        awb.data as AssignAwbResponse
+                    ).response.data.awb_code;
+                    return sr;
+                } catch (e) {
+                    this.parseError(e);
+                }
+            }
+        );
+        return Promise.all(
+            shiprocketCreateResponse.filter((s) => s != undefined)
+        );
+    }
+
+    /*  async (sr, index) => {
+                            const createResponse =
+                                sr.data as CreateOrderResponse;
+                            const awb = await this.generateAWB(
+                                createResponse.shipment_id;
+                            );
+                           
+                        );*/
+
+    getPrice(
+        prices: MoneyAmount[],
+        currency_code: any
+    ): MoneyAmount | undefined {
+        const price = prices.filter(
+            (p) =>
+                p.currency_code.toLocaleUpperCase() ==
+                currency_code.toLocaleUpperCase()
+        );
+        if (price.length > 0) {
+            return price[0];
+        }
+    }
     static identifier = "shiprocket";
     fulfillmentTypes = [
         "shiprocket-india-only-domestic-surface",
@@ -269,13 +361,14 @@ class ShiprocketProviderService extends FulfillmentService {
                 city,
                 state,
                 country,
-                pin_code
+                pin_code,
+                pickup_location
             } = request;
 
             const result = await this.axiosInstance.post(
                 "settings/company/addpickup",
                 {
-                    pickup_location: new RandExp(/^[A-Z0-9]{8}$/).gen(),
+                    pickup_location,
                     name,
                     email,
                     phone,
@@ -302,9 +395,7 @@ class ShiprocketProviderService extends FulfillmentService {
         } catch (error) {
             const { response } = error;
 
-            const {
-                data: { message }
-            } = response;
+            const message = this.parseError(response);
 
             return {
                 status: false,
@@ -314,7 +405,9 @@ class ShiprocketProviderService extends FulfillmentService {
         }
     }
 
-    async requestCreateOrder(request): Promise<ShiprocketResult> {
+    async requestCreateOrder(
+        request: CreateOrderRequestOptions
+    ): Promise<ShiprocketResult> {
         try {
             const {
                 order_id,
@@ -322,61 +415,67 @@ class ShiprocketProviderService extends FulfillmentService {
                 pickup_location,
                 channel_id,
                 comment,
-                billing_customer_name,
-                billing_last_name,
-                billing_address,
-                billing_address_2,
-                billing_city,
-                billing_pincode,
-                billing_state,
-                billing_country,
-                billing_email,
-                billing_phone,
+                shipping_is_billing,
+                order_items,
+                payment_method
+            } = request;
+
+            const shippingAddress = {
+                shipping_customer_name: `${request.shipping_address?.first_name} ${request.shipping_address?.last_name}`,
+                shipping_last_name: request.shipping_address?.last_name,
+                shipping_address: request.shipping_address?.address,
+                shipping_address_2: request.shipping_address?.address_2,
+                shipping_city: request.shipping_address?.city,
+                shipping_pincode: request.shipping_address?.pincode,
+                shipping_state: request.shipping_address?.state,
+                shipping_country: request.shipping_address?.country,
+                shipping_email: request.shipping_address?.email,
+                shipping_phone: request.shipping_address?.phone
+            };
+
+            const orderRequest = {
+                order_id,
+                order_date,
+                pickup_location,
+                channel_id,
+                comment,
+                billing_customer_name:
+                    `${request.billing_address.first_name}` +
+                    ` ${request.billing_address.last_name}`,
+                billing_last_name: request.billing_address.last_name,
+                billing_address: request.billing_address.address,
+                billing_address_2: request.billing_address.address_2,
+                billing_city: request.billing_address.city,
+                billing_pincode: request.billing_address.pincode,
+                billing_state: request.billing_address.state,
+                billing_country: request.billing_address.country,
+                billing_email: request.billing_address.email,
+                billing_phone: request.billing_address.phone,
                 shipping_is_billing,
                 order_items,
                 payment_method,
-                shipping_charges,
-                giftwrap_charges,
-                transaction_charges,
-                total_discount,
-                sub_total,
-                length,
-                breadth,
-                height,
-                weight
-            } = request;
+                shipping_charges: request.priceInfo.shipping_charges,
+                giftwrap_charges: request.priceInfo.shipping_charges,
+                transaction_charges: request.priceInfo.transaction_charges,
+                total_discount: request.priceInfo.total_discount,
+                sub_total: request.priceInfo.sub_total,
+                length: request.packageInfo.length,
+                breadth: request.packageInfo.breadth,
+                height: request.packageInfo.height,
+                weight: request.packageInfo.weight
+            };
+            let orderRequestWithAddress = orderRequest;
+            if (!shipping_is_billing) {
+                orderRequestWithAddress = {
+                    shipping_is_billing: !shipping_is_billing ? 0 : 1,
+                    ...orderRequest,
+                    ...shippingAddress
+                };
+            }
 
             const result = await this.axiosInstance.post(
                 "orders/create/adhoc",
-                {
-                    order_id,
-                    order_date,
-                    pickup_location,
-                    channel_id,
-                    comment,
-                    billing_customer_name,
-                    billing_last_name,
-                    billing_address,
-                    billing_address_2,
-                    billing_city,
-                    billing_pincode,
-                    billing_state,
-                    billing_country,
-                    billing_email,
-                    billing_phone,
-                    shipping_is_billing,
-                    order_items,
-                    payment_method,
-                    shipping_charges,
-                    giftwrap_charges,
-                    transaction_charges,
-                    total_discount,
-                    sub_total,
-                    length,
-                    breadth,
-                    height,
-                    weight
-                }
+                orderRequestWithAddress
             );
 
             const { status, data } = this.validateData(result);
@@ -692,7 +791,7 @@ class ShiprocketProviderService extends FulfillmentService {
     async deleteOrder(ids): Promise<ShiprocketResult> {
         try {
             const result = await this.axiosInstance.post("orders/cancel", {
-                ids
+                ids: Array.isArray(ids) ? ids : [ids]
             });
 
             const { status, data } = this.validateData(result);
@@ -700,11 +799,6 @@ class ShiprocketProviderService extends FulfillmentService {
             if (!status) {
                 throw new Error(data.message);
             }
-
-            if (data.prototype.hasOwnProperty.call("status_code")) {
-                throw new Error(data.message);
-            }
-
             return {
                 status: true,
                 data: true,
@@ -730,19 +824,19 @@ class ShiprocketProviderService extends FulfillmentService {
         }
     }
 
-    parseError(error): string {
+    parseError(errorResponse): string {
         try {
-            const { response } = error;
-
+            const { response } = errorResponse;
             if (!response) {
-                throw new Error(error.message);
+                throw new Error(errorResponse.message);
+            }
+            const { data } = response;
+
+            if (!data) {
+                throw new Error(errorResponse.message);
             }
 
-            const {
-                data: { message }
-            } = response;
-
-            return message || "Error while operating!";
+            return JSON.stringify(data.errors) || "Error while operating!";
         } catch (e) {
             return e.message;
         }
@@ -803,7 +897,7 @@ class ShiprocketProviderService extends FulfillmentService {
         try {
             this.fulfillmentTypes.includes(optionData.id);
             if (
-                cart.billing_address.country.iso_2 == "IN" &&
+                cart.billing_address.country_code == "IN" &&
                 (optionData.id != this.fulfillmentTypes[0] ||
                     optionData.id != this.fulfillmentTypes[1] ||
                     optionData.id != this.fulfillmentTypes[2] ||
@@ -813,7 +907,7 @@ class ShiprocketProviderService extends FulfillmentService {
             }
 
             if (
-                cart.billing_address.country.iso_2 != "IN" &&
+                cart.billing_address.country_code != "IN" &&
                 optionData.id != this.fulfillmentTypes[1]
             ) {
                 throw new Error(
@@ -876,14 +970,18 @@ class ShiprocketProviderService extends FulfillmentService {
             city: order.billing_address.city,
             state: order.billing_address.province,
             pincode: order.billing_address.postal_code,
-            country: order.billing_address.country.iso_2,
+            country: order.billing_address.country.name,
             address: order.billing_address.address_1,
             address_2: order.billing_address.address_2
         };
-        const locations = items.map((item) => item.fulfillment.location_id);
-        const result = locations.map(async (pickUplocation) => {
+        const locations = items.map(
+            (item) => item.fulfillment?.location_id ?? fulfillment.location_id
+        );
+        const result = locations.map(async (pickUpLocation) => {
             const itemsAtLocation = items.filter(
-                (item) => item.fulfillment.location_id == pickUplocation
+                (item) =>
+                    (item.fulfillment?.location_id ??
+                        fulfillment.location_id) == pickUpLocation
             );
 
             return await this.createOrderAtLocation(
@@ -892,7 +990,7 @@ class ShiprocketProviderService extends FulfillmentService {
                 order,
                 fulfillment,
                 billing_address,
-                pickUplocation
+                pickUpLocation
             );
         });
 
@@ -909,7 +1007,7 @@ class ShiprocketProviderService extends FulfillmentService {
                 fulfillment.location_id
             );
 
-            const delivery_country_code = order.shipping_address.country_code;
+            const delivery_country_code = order.shipping_address?.country_code;
             let serviceability: ShiprocketResult[];
             if (delivery_country_code == "IN") {
                 const mode =
@@ -954,7 +1052,7 @@ class ShiprocketProviderService extends FulfillmentService {
         const result = order.items.map(async (item) => {
             const options: ServiceabilityOptions = {
                 pickup_pincode: stockLocation.address.postal_code,
-                delivery_pincode: order.shipping_address.postal_code,
+                delivery_pincode: order.shipping_address?.postal_code,
                 cod: cod,
                 weight: item.variant.weight,
                 height: item.variant.height,
@@ -980,7 +1078,9 @@ class ShiprocketProviderService extends FulfillmentService {
                 : undefined;
             const options: InternationalServiceabilityOptions = {
                 pickup_postcode: stockLocation.address.postal_code,
-                delivery_country: order.shipping_address.country_code,
+                delivery_country:
+                    order.shipping_address?.country_code ??
+                    order.billing_address?.country_code,
                 currency: currency ?? "USD",
                 weight: item.variant.weight,
                 cod: false
@@ -1068,38 +1168,85 @@ class ShiprocketProviderService extends FulfillmentService {
             }
         }
 
-        const options: CreateRequestOptions = {
+        let totalWeight = 0;
+        let maxLength = 0.5;
+        let maxBreadth = 0.5;
+        let maxHeight = 0.5;
+        let sub_total = 0;
+        let discount_sub_total = 0;
+
+        items.map((item) => {
+            totalWeight += item.item.variant.weight;
+            maxLength =
+                item.item.variant.length > maxLength
+                    ? item.item.variant.length
+                    : maxLength;
+            maxBreadth =
+                item.item.variant.width > maxBreadth
+                    ? item.item.variant.length
+                    : maxBreadth;
+            maxHeight =
+                item.item.variant.height > maxHeight
+                    ? item.item.variant.length
+                    : maxHeight;
+            sub_total +=
+                this.getPrice(
+                    item.item.variant.prices,
+                    order.cart.region.currency_code
+                ).amount * item.item.quantity;
+            discount_sub_total += item.item.discount_total;
+        });
+
+        const convertedItems = this.convertItems(
+            items,
+            order.cart.region.currency_code
+        );
+        order.shipping_address;
+        const createOrderRequestOptions: CreateOrderRequestOptions = {
             channel_id: parseInt(this.options.channelId),
             order_id: order.id,
             order_date: order.created_at.toISOString(),
-
+            comment: `Shipping ${order.id} from ${fulfillment.location_id}`,
             billing_address,
-            order_items: this.convertItems(items),
+            shipping_is_billing: false,
+            shipping_address: {
+                ...order.shipping_address,
+                email: billing_address.email,
+                pincode: order.shipping_address.postal_code,
+                state: order.shipping_address.province,
+                address: order.shipping_address.address_1,
+                country: order.shipping_address.country.name
+            },
+            order_items: convertedItems,
             pickup_location: pickUpLocationName,
             priceInfo: {
-                discount: 0,
-                sub_total: 0,
-                total_discount: 0,
-                shipping_charges: 0,
+                discount: discount_sub_total,
+                sub_total: sub_total,
+                total_discount: discount_sub_total,
+                shipping_charges: order.cart.shipping_total,
                 giftwrap_charges: 0,
                 transaction_charges: 0
             },
-            payment_method: "Prepaid",
-            pakageInfo: {
-                length: 0,
-                breadth: 0,
-                height: 0,
-                weight: 0
+            payment_method: data.shipping_option_id.includes("cod")
+                ? "COD"
+                : "Prepaid",
+            packageInfo: {
+                length: maxLength,
+                breadth: maxBreadth,
+                height: maxHeight,
+                weight: totalWeight
             }
         };
-        const response = await this.requestCreateOrder(options);
-        fulfillment.metadata["shiprocket_order_id"] = response.data.order_id;
+        const response = await this.requestCreateOrder(
+            createOrderRequestOptions
+        );
+        fulfillment["shiprocket_order_id"] = response.data.order_id;
         return response;
     }
 
     cancelFulfillment(fulfillment: Fulfillment): Promise<ShiprocketResult> {
         return this.postShiprocketResultOfAction("/orders/cancel", {
-            id: fulfillment.metadata.shiprocket_order_id
+            ids: [fulfillment.metadata.shiprocket_order_id]
         });
     }
     // eslint-disable-next-line valid-jsdoc
@@ -1218,6 +1365,38 @@ class ShiprocketProviderService extends FulfillmentService {
     };
 
     /**
+     * Full fillment will need to be updated manually
+     * @param shipment_id - the shipment to cancel
+     * @returns ShiprocketResult
+     */
+    cancelShipment = async (
+        shipment_id: string | string[]
+    ): Promise<ShiprocketResult> => {
+        return this.postShiprocketResultOfAction(
+            "orders/cancel/shipment/awbs",
+            {
+                awbs: Array.isArray(shipment_id) ? shipment_id : [shipment_id]
+            }
+        );
+    };
+
+    /**
+     * @param shipment_id string : e.g="432136546" Shipment Id to track
+     * @return object
+     */
+    // get specific order
+    getShipment = async (shipment_id: string): Promise<ShiprocketResult> =>
+        this.getShiprocketResultOfAction("/shipments/" + shipment_id);
+
+    /**
+     * @param shipment_id string : e.g="432136546" returns all shipments
+     * @return object
+     */
+    // get specific order
+    getAllShipments = async (): Promise<ShiprocketResult> =>
+        this.getShiprocketResultOfAction("/shipments/");
+
+    /**
      * @param id string : e.g="432136546"
      * @return object
      */
@@ -1244,19 +1423,35 @@ class ShiprocketProviderService extends FulfillmentService {
         );
     };
     // updateOrder = (options: orderOptions) => updateOrder({ auth: this.auth(), data: options });
-    convertItems = (data: FulfillmentItem[]): OrderItem[] | undefined => {
+    convertItems = (
+        data: FulfillmentItem[],
+        currency_code
+    ): OrderItem[] | undefined => {
         if (data?.length) {
-            const order_items: OrderItem[] = data.map((fulfillmentItem) => ({
-                sku: fulfillmentItem?.item.variant.id,
-                name: fulfillmentItem?.item.variant.title,
-                tax: fulfillmentItem.item.tax_lines[0].rate,
-                hsn: parseInt(
-                    fulfillmentItem.item.variant.hs_code.replace(" ", "")
-                ),
-                units: fulfillmentItem?.quantity,
-                selling_price: fulfillmentItem?.item.variant.prices[0].amount,
-                discount: 0
-            }));
+            const order_items = data.map((fulfillmentItem) => {
+                const price = this.getPrice(
+                    fulfillmentItem?.item.variant.prices,
+                    currency_code
+                );
+
+                return {
+                    sku: fulfillmentItem?.item.variant.id,
+                    name: fulfillmentItem?.item.variant.title,
+                    tax: fulfillmentItem.item.includes_tax
+                        ? 0
+                        : fulfillmentItem.item.tax_total ?? 0,
+                    hsn: parseInt(
+                        fulfillmentItem.item.variant.hs_code.replace(" ", "")
+                    ),
+                    units: fulfillmentItem?.quantity,
+                    selling_price: price.amount,
+
+                    discount: fulfillmentItem.item.discount_total
+                        ? fulfillmentItem.item.discount_total
+                        : 0
+                };
+            });
+
             return order_items;
         }
 
@@ -1486,6 +1681,30 @@ class ShiprocketProviderService extends FulfillmentService {
         return this.getShiprocketResultOfAction(path);
     };
 
+    /**
+     *
+     * @param shipment_id - the shipment id to pickup
+     * @param pickupDates  - the date to pickup on
+     * @param retry - "if retry"
+     * @returns
+     */
+
+    createPickupRequqest = (
+        shipment_id: string,
+        pickupDates: /** yyyy-mm-dd format */ string | string[],
+        retry?: "retry"
+    ): Promise<ShiprocketResult> => {
+        const data = {
+            shipment_id: shipment_id,
+            pickup_date: Array.isArray(pickupDates)
+                ? pickupDates
+                : [pickupDates]
+        };
+        return this.postShiprocketResultOfAction(
+            "/courier/generate/pickup",
+            retry ? { ...data, retry } : data
+        );
+    };
     getInternationalServiceability = (
         options: InternationalServiceabilityOptions
     ): Promise<ShiprocketResult> => {
@@ -1541,6 +1760,13 @@ class ShiprocketProviderService extends FulfillmentService {
     async postQuickCreateForward(
         data: QuickForwardRequest
     ): Promise<ShiprocketResult> {
+        return await this.postShiprocketResultOfAction(
+            "shipments/create/forward-shipment",
+            data
+        );
+    }
+
+    async postQuickReturn(data: QuickReturnRequest): Promise<ShiprocketResult> {
         return await this.postShiprocketResultOfAction(
             "shipments/create/forward-shipment",
             data

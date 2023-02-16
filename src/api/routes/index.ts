@@ -1,11 +1,14 @@
 import { Router } from "express";
 import cors from "cors";
-import shipRocketRoutes from "./shipping";
+import shiprocketRoutes from "./shipping";
+import trackingtRoutes from "./tracking";
 
 import { ConfigModule } from "@medusajs/medusa";
-import { ShiprocketOptions } from "services/shiprocket-provider";
+import { ShiprocketOptions } from "../../services/shiprocket-provider";
+import tracking from "./tracking";
 
-const router = Router();
+const shippingRouter = Router();
+const trackingRouter = Router();
 
 export default (
     app: Router,
@@ -13,13 +16,21 @@ export default (
     options: ShiprocketOptions,
     config: ConfigModule
 ): Router => {
-    const corsOptions = {
-        origin: config.projectConfig.store_cors.split(","),
+    const corsStoreOptions = {
+        origin: config.projectConfig.admin_cors.split(","),
         credentials: true
     };
-    app.use("/shipping", router);
-    router.options("/shipping", cors(corsOptions));
-    shipRocketRoutes(router, options, config);
+    app.use("/shipping", shippingRouter);
+    shippingRouter.options("/shipping", cors(corsStoreOptions));
+    shiprocketRoutes(shippingRouter, options, config);
+    const regex = /^\*\.shiprocket\.com$/i;
+    const corsOptions = {
+        origin: regex,
+        credentials: true
+    };
+    app.use("/tracking", trackingRouter);
+    trackingRouter.options("/tracking", cors(corsOptions));
+    trackingtRoutes(trackingRouter, options, config);
 
     return app;
 };
