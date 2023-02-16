@@ -1,4 +1,6 @@
 import { EntityManager } from "typeorm";
+const isolationLevel = "SERIALIZABLE";
+import otpGenerator from "otp-generator";
 import {
     ClaimService,
     EventBusService,
@@ -20,7 +22,6 @@ import {
     Order,
     ReturnItem,
     StockLocationDTO,
-    Item,
     ShippingOption,
     MoneyAmount
 } from "@medusajs/medusa";
@@ -29,13 +30,7 @@ import { FulfillmentService } from "medusa-interfaces";
 import { FulfillmentRepository } from "@medusajs/medusa/dist/repositories/fulfillment";
 import { LineItemRepository } from "@medusajs/medusa/dist/repositories/line-item";
 import { TrackingLinkRepository } from "@medusajs/medusa/dist/repositories/tracking-link";
-import {
-    AxiosInstance,
-    AxiosRequestConfig,
-    AxiosResponse,
-    default as axios
-} from "axios";
-import RandExp from "randexp";
+import { AxiosInstance, default as axios } from "axios";
 import JobSchedulerService from "@medusajs/medusa/dist/services/job-scheduler";
 import {
     Address,
@@ -51,7 +46,6 @@ import {
     ProductOptions,
     ServiceabilityOptions,
     CreateOrderResponse,
-    AwbResponse,
     AssignAwbResponse
 } from "../types/globals";
 import { createPackageValidator } from "../api/controllers/package/v1/package-validator-utils";
@@ -62,8 +56,8 @@ import {
     QuickReturnRequest
 } from "../types/quick-response";
 import { ShipmentCreatedEvent } from "../subscribers";
-import { parse } from "node:path";
-import { arrayBuffer } from "stream/consumers";
+import { incDay } from "utils";
+import { hash } from "scrypt";
 
 export type ShiprocketResult = {
     status: boolean;
@@ -97,91 +91,10 @@ export interface ShiprocketOptions {
     shiprocket_url: string;
     shiprocket_username?: string;
     shiprocket_password?: string;
+    enable_next_day_pickup?: boolean;
 }
 
 class ShiprocketProviderService extends FulfillmentService {
-    async createShipmentFromFulfillment(
-        shipmentEvent: ShipmentCreatedEvent
-    ): Promise<ShiprocketResult[]> {
-        const order = await this.orderService.retrieve(shipmentEvent.id);
-        const methods = order.shipping_methods.filter(
-            (m) => m.shipping_option.provider_id == this.getIdentifier()
-        );
-        if (methods.length > 0) {
-            return await this.atomicPhase_(
-                async (manager: EntityManager) => {
-                    const fulfillmentRepository = manager.getCustomRepository(
-                        this.fulfillmentRepository_
-                    );
-                    try {
-                        const fulfillment = await fulfillmentRepository.findOne(
-                            shipmentEvent.fulfillment_id
-                        );
-                        const shiprocketData =
-                            fulfillment.data as unknown as ShiprocketResult[];
-                        const shiprocketAwbResponse = await this.generateAllAwb(
-                            shiprocketData
-                        );
-                        await Promise.all(shiprocketAwbResponse);
-                        const fulfillmentSaved =
-                            await fulfillmentRepository.save(fulfillment);
-                    } catch (e) {
-                        this.parseError(e);
-                    }
-                },
-                "SERIALIZABLE",
-                false
-            );
-        }
-    }
-
-    async generateAllAwb(
-        shiprocketData: ShiprocketResult[]
-    ): Promise<ShiprocketResult[]> {
-        const shiprocketCreateResponse = shiprocketData.map(
-            async (sr, index) => {
-                const createResponse = sr.data as CreateOrderResponse;
-                try {
-                    const awb = await this.generateAWB(
-                        createResponse.shipment_id
-                    );
-                    const t = shiprocketData[index];
-                    t["awb"] = (
-                        awb.data as AssignAwbResponse
-                    ).response.data.awb_code;
-                    return sr;
-                } catch (e) {
-                    this.parseError(e);
-                }
-            }
-        );
-        return Promise.all(
-            shiprocketCreateResponse.filter((s) => s != undefined)
-        );
-    }
-
-    /*  async (sr, index) => {
-                            const createResponse =
-                                sr.data as CreateOrderResponse;
-                            const awb = await this.generateAWB(
-                                createResponse.shipment_id;
-                            );
-                           
-                        );*/
-
-    getPrice(
-        prices: MoneyAmount[],
-        currency_code: any
-    ): MoneyAmount | undefined {
-        const price = prices.filter(
-            (p) =>
-                p.currency_code.toLocaleUpperCase() ==
-                currency_code.toLocaleUpperCase()
-        );
-        if (price.length > 0) {
-            return price[0];
-        }
-    }
     static identifier = "shiprocket";
     fulfillmentTypes = [
         "shiprocket-india-only-domestic-surface",
@@ -318,6 +231,171 @@ class ShiprocketProviderService extends FulfillmentService {
 
         return cloned as this;
     }
+    async createShipmentFromFulfillment(
+        shipmentEvent: ShipmentCreatedEvent
+    ): Promise<ShiprocketResult[]> {
+        const order = await this.orderService.retrieve(shipmentEvent.id);
+        const methods = order.shipping_methods.filter(
+            (m) => m.shipping_option.provider_id == this.getIdentifier()
+        );
+        if (methods.length > 0) {
+            return await this.atomicPhase_(
+                async (manager: EntityManager) => {
+                    const fulfillmentRepository = manager.getCustomRepository(
+                        this.fulfillmentRepository_
+                    );
+                    try {
+                        const fulfillment = await fulfillmentRepository.findOne(
+                            shipmentEvent.fulfillment_id
+                        );
+                        const shiprocketData =
+                            fulfillment.data as unknown as ShiprocketResult[];
+                        const shiprocketAwbResponse = await this.generateAllAwb(
+                            fulfillment.id,
+                            shiprocketData
+                        );
+                        await Promise.all(shiprocketAwbResponse);
+                        const fulfillmentSaved =
+                            await fulfillmentRepository.save(fulfillment);
+                    } catch (e) {
+                        this.parseError(e);
+                    }
+                },
+                isolationLevel,
+                false
+            );
+        }
+    }
+    /**
+     * Over writes fulfilment data
+     * @param fulfillment_id
+     * @param dataToSave
+     * @enr
+     * @returns
+     */
+
+    async updateFulfillment(
+        fulfillment_id: string,
+        dataToSave: ShiprocketResult | ShiprocketResult[],
+        entity?: string,
+        shipment_id?: string
+    ): Promise<Fulfillment> {
+        return await this.atomicPhase_(
+            async (manager: EntityManager) => {
+                const fulfillmentRepository = manager.getCustomRepository(
+                    this.fulfillmentRepository_
+                );
+                try {
+                    const fulfillment = await fulfillmentRepository.findOne(
+                        fulfillment_id
+                    );
+                    const shippings = (
+                        fulfillment.data as unknown as ShiprocketResult[]
+                    ).filter((s) => {
+                        return s?.data?.shipment_id == shipment_id;
+                    });
+
+                    if (!shippings[0]) {
+                        shippings.push({
+                            status: true,
+                            data: undefined,
+                            message: ""
+                        });
+                    }
+                    const dataToUpdate = shippings[0];
+                    if (entity) {
+                        if (!dataToUpdate.data[entity]) {
+                            dataToUpdate.data[entity] = dataToSave;
+                        } else {
+                            Object.assign(
+                                dataToUpdate.data[entity],
+                                dataToSave
+                            );
+                        }
+                    } else {
+                        Object.assign(dataToUpdate.data, dataToSave);
+                    }
+
+                    const fulfillmentSaved = await fulfillmentRepository.save(
+                        fulfillment
+                    );
+                    return fulfillmentSaved;
+                } catch (e) {
+                    this.parseError(e);
+                }
+            },
+            isolationLevel,
+            false
+        );
+    }
+
+    async generateAllAwb(
+        fulfillment_id: string,
+        shiprocketData: ShiprocketResult[]
+    ): Promise<ShiprocketResult[]> {
+        const shiprocketCreateResponse = shiprocketData.map(
+            async (sr, index) => {
+                const createResponse = sr.data as CreateOrderResponse;
+                try {
+                    const awb = await this.generateAWB(
+                        fulfillment_id,
+                        createResponse.shipment_id.toString()
+                    );
+                    const awbAndShipmentData = shiprocketData[index];
+                    awbAndShipmentData["awb"] = (
+                        awb.data as AssignAwbResponse
+                    ).response.data.awb_code;
+                    if (this.options.enable_next_day_pickup) {
+                        const pickupResponse = await this.createPickupRequest(
+                            fulfillment_id,
+                            createResponse.shipment_id.toString(),
+                            incDay(new Date(), 1)
+                        );
+                        awbAndShipmentData["pickupResponse"] = pickupResponse;
+                        const otp = otpGenerator.generate(6, {
+                            lowerCaseAlphabets: false,
+                            upperCaseAlphabets: false,
+                            specialChars: false
+                        });
+                        awbAndShipmentData["otp"] = otp;
+                        awbAndShipmentData["otp_used"] = otp;
+                    } else {
+                        /** incase of pick up later */
+                        const otp = otpGenerator.generate(6, {
+                            lowerCaseAlphabets: false,
+                            upperCaseAlphabets: false,
+                            specialChars: false
+                        });
+                        awbAndShipmentData["otp"] = otp;
+                        awbAndShipmentData["otp_used"] = "";
+                    }
+                    awbAndShipmentData["requestedAt"] =
+                        new Date().toISOString();
+                    return sr;
+                } catch (e) {
+                    this.parseError(e);
+                }
+            }
+        );
+        return (await Promise.all(shiprocketCreateResponse)).filter(
+            (s) => s != undefined
+        );
+    }
+
+    getPrice(
+        prices: MoneyAmount[],
+        currency_code: any
+    ): MoneyAmount | undefined {
+        const price = prices.filter(
+            (p) =>
+                p.currency_code.toLocaleUpperCase() ==
+                currency_code.toLocaleUpperCase()
+        );
+        if (price.length > 0) {
+            return price[0];
+        }
+    }
+
     setTransactionManager(transactionManager: EntityManager): this {
         this.transactionManager = transactionManager;
         return this;
@@ -334,7 +412,7 @@ class ShiprocketProviderService extends FulfillmentService {
                 throw new Error("Unable to get auth-token!");
             }
 
-            return {
+            const response = {
                 status: true,
                 message: "Auth token fetched!",
                 data: result.data
@@ -484,11 +562,13 @@ class ShiprocketProviderService extends FulfillmentService {
                 throw new Error(data.message);
             }
 
-            return {
+            const response = {
                 status: true,
                 data,
                 message: "Pickup request placed successfully!"
             };
+
+            return response;
         } catch (error) {
             const message = this.parseError(error);
 
@@ -557,7 +637,7 @@ class ShiprocketProviderService extends FulfillmentService {
                 throw new Error(data.message);
             }
 
-            return {
+            const response = {
                 status: true,
                 data,
                 message: "Pickup request placed successfully!"
@@ -569,7 +649,10 @@ class ShiprocketProviderService extends FulfillmentService {
         }
     }
 
-    async generateAWB(shipment_id): Promise<ShiprocketResult> {
+    async generateAWB(
+        fulfillment_id: string,
+        shipment_id: string
+    ): Promise<ShiprocketResult> {
         try {
             const result = await this.axiosInstance.post("courier/assign/awb", {
                 shipment_id,
@@ -586,15 +669,31 @@ class ShiprocketProviderService extends FulfillmentService {
                 throw new Error(data.message);
             }
 
-            const returnData = data.response.data;
+            const returnData = (data as AssignAwbResponse).response.data;
 
-            returnData.awb_assign_status = data.awb_assign_status;
-
-            return {
+            await this.atomicPhase_(
+                async (manager: EntityManager) => {
+                    await this.eventBusService
+                        .withTransaction(manager)
+                        .emit("SHIPROCKET.AWB.CREATED", {
+                            shipment_id,
+                            response: returnData
+                        });
+                },
+                isolationLevel,
+                false
+            );
+            const shiprocketResult = {
                 status: true,
-                data: returnData,
+                data: { shipment_id, ...returnData },
                 message: "AWB assigned successfully!"
             };
+            await this.updateFulfillment(
+                fulfillment_id,
+
+                shiprocketResult,
+                "awb_generation"
+            );
         } catch (error) {
             const message = this.parseError(error);
 
@@ -602,7 +701,36 @@ class ShiprocketProviderService extends FulfillmentService {
         }
     }
 
-    async generateLabel(shipment_id): Promise<ShiprocketResult> {
+    async findShipmentInFulFillmentList(
+        fulfillment_id,
+        shipment_id
+    ): Promise<ShiprocketResult[]> {
+        return await this.atomicPhase_(
+            async (manager: EntityManager) => {
+                const fulfillmentRepository = manager.getCustomRepository(
+                    this.fulfillmentRepository_
+                );
+                try {
+                    const fulfillment = await fulfillmentRepository.findOne(
+                        fulfillment_id
+                    );
+                    const shippings =
+                        fulfillment?.data as unknown as ShiprocketResult[];
+                    shippings.filter((s) => s.data.shipping_id == shipment_id);
+                    return shippings;
+                } catch (e) {
+                    this.parseError(e);
+                }
+            },
+            isolationLevel,
+            false
+        );
+    }
+
+    async generateLabel(
+        fulfillment_id: string,
+        shipment_id: string
+    ): Promise<ShiprocketResult> {
         try {
             const result = await this.axiosInstance.post(
                 "courier/generate/label",
@@ -627,11 +755,16 @@ class ShiprocketProviderService extends FulfillmentService {
                 throw new Error("Error while generating labels!");
             }
 
-            return {
+            const shiprocketResult = {
                 status: true,
                 data: label_url,
                 message: "Label generated successfully!"
             };
+            await this.updateFulfillment(
+                fulfillment_id,
+                shiprocketResult,
+                "awb_generation"
+            );
         } catch (error) {
             const message = this.parseError(error);
 
@@ -639,7 +772,10 @@ class ShiprocketProviderService extends FulfillmentService {
         }
     }
 
-    async generateInvoice(ids): Promise<ShiprocketResult> {
+    async generateInvoice(
+        ids: string[],
+        fulfillment_id: string
+    ): Promise<ShiprocketResult> {
         try {
             const result = await this.axiosInstance.post(
                 "orders/print/invoice",
@@ -673,11 +809,13 @@ class ShiprocketProviderService extends FulfillmentService {
                 throw new Error("Error while generating invoices!");
             }
 
-            return {
+            const response = {
                 status: true,
                 data: invoice_url,
                 message: "Invoice generated successfully!"
             };
+            await this.updateFulfillment(fulfillment_id, response, "invoice");
+            return response;
         } catch (error) {
             const message = this.parseError(error);
 
@@ -685,7 +823,10 @@ class ShiprocketProviderService extends FulfillmentService {
         }
     }
 
-    async shipmentPickUp(shipment_id): Promise<ShiprocketResult> {
+    async shipmentPickUp(
+        shipment_id: string,
+        fulfillment_id: string
+    ): Promise<ShiprocketResult> {
         try {
             const result = await this.axiosInstance.post(
                 "courier/generate/pickup",
@@ -720,7 +861,14 @@ class ShiprocketProviderService extends FulfillmentService {
             returnData.status = pickUpStatus;
             returnData.pickup_generated_date = pickup_generated_date;
 
-            return { status: true, data: returnData, message };
+            const response = {
+                status: true,
+                data: returnData,
+                message: "Invoice generated successfully!"
+            };
+            await this.updateFulfillment(fulfillment_id, response, "pickup");
+
+            return response;
         } catch (error) {
             const message = this.parseError(error);
 
@@ -746,7 +894,7 @@ class ShiprocketProviderService extends FulfillmentService {
 
             const { manifest_url } = data;
 
-            return {
+            const response = {
                 status: true,
                 data: manifest_url,
                 message: "Manifest generated successfully!"
@@ -758,7 +906,10 @@ class ShiprocketProviderService extends FulfillmentService {
         }
     }
 
-    async printManifests(order_ids): Promise<ShiprocketResult> {
+    async printManifests(
+        order_ids: string[],
+        fulfillment_id: string
+    ): Promise<ShiprocketResult> {
         try {
             const result = await this.axiosInstance.post("manifests/print", {
                 order_ids
@@ -776,11 +927,17 @@ class ShiprocketProviderService extends FulfillmentService {
 
             const { manifest_url } = data;
 
-            return {
+            const response = {
                 status: true,
                 data: manifest_url,
                 message: "Manifest generated successfully!"
             };
+            await this.updateFulfillment(
+                fulfillment_id,
+                response,
+                "print_manifests"
+            );
+            return response;
         } catch (error) {
             const message = this.parseError(error);
 
@@ -788,7 +945,7 @@ class ShiprocketProviderService extends FulfillmentService {
         }
     }
 
-    async deleteOrder(ids): Promise<ShiprocketResult> {
+    async deleteOrder(ids, fulfillment_id: string): Promise<ShiprocketResult> {
         try {
             const result = await this.axiosInstance.post("orders/cancel", {
                 ids: Array.isArray(ids) ? ids : [ids]
@@ -799,11 +956,17 @@ class ShiprocketProviderService extends FulfillmentService {
             if (!status) {
                 throw new Error(data.message);
             }
-            return {
+            const response = {
                 status: true,
                 data: true,
                 message: "Orders cancelled successfully!"
             };
+            await this.updateFulfillment(
+                fulfillment_id,
+                response,
+                "order-deleted"
+            );
+            return response;
         } catch (error) {
             const message = this.parseError(error);
 
@@ -1689,7 +1852,8 @@ class ShiprocketProviderService extends FulfillmentService {
      * @returns
      */
 
-    createPickupRequqest = (
+    createPickupRequest = async (
+        fulfillment_id: string,
         shipment_id: string,
         pickupDates: /** yyyy-mm-dd format */ string | string[],
         retry?: "retry"
@@ -1700,10 +1864,15 @@ class ShiprocketProviderService extends FulfillmentService {
                 ? pickupDates
                 : [pickupDates]
         };
-        return this.postShiprocketResultOfAction(
+
+        const result = await this.postShiprocketResultOfAction(
             "/courier/generate/pickup",
             retry ? { ...data, retry } : data
         );
+
+        await this.updateFulfillment(fulfillment_id, result, "pickup");
+
+        return result;
     };
     getInternationalServiceability = (
         options: InternationalServiceabilityOptions
@@ -1758,12 +1927,15 @@ class ShiprocketProviderService extends FulfillmentService {
     };
 
     async postQuickCreateForward(
+        fulfillment_id: string,
         data: QuickForwardRequest
     ): Promise<ShiprocketResult> {
-        return await this.postShiprocketResultOfAction(
+        const result = await this.postShiprocketResultOfAction(
             "shipments/create/forward-shipment",
             data
         );
+        await this.updateFulfillment(fulfillment_id, result);
+        return result;
     }
 
     async postQuickReturn(data: QuickReturnRequest): Promise<ShiprocketResult> {
@@ -1781,7 +1953,7 @@ class ShiprocketProviderService extends FulfillmentService {
                 throw new Error(data.message);
             }
 
-            return {
+            const response = {
                 status: true,
                 data,
                 message: "Request Executed Successfully"
@@ -1804,7 +1976,7 @@ class ShiprocketProviderService extends FulfillmentService {
                 throw new Error(data.message);
             }
 
-            return {
+            const response = {
                 status: true,
                 data,
                 message: "Request Executed Successfully"
@@ -1827,7 +1999,7 @@ class ShiprocketProviderService extends FulfillmentService {
                 throw new Error(data.message);
             }
 
-            return {
+            const response = {
                 status: true,
                 data,
                 message: "Request Executed Successfully"

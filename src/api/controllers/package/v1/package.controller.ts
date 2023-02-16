@@ -28,13 +28,14 @@ export const requestCreateOrder = async (
 
 export const assignAWB = async (req, res) => {
     try {
-        const { shipmentId } = req.body;
+        const { shipmentId, fulfillmentId } = req.body;
 
         const shipRocket = req.scope.resolve(
             "shiprocketProviderService"
         ) as ShiprocketProviderService;
 
         const { status, data, message } = await shipRocket.generateAWB(
+            fulfillmentId,
             shipmentId
         );
 
@@ -50,13 +51,14 @@ export const assignAWB = async (req, res) => {
 
 export const generateLabel = async (req, res) => {
     try {
-        const { shipmentIds } = req.body;
+        const { shipmentIds, fulfillmentId } = req.body;
 
         const shipRocket = req.scope.resolve(
             "shiprocketProviderService"
         ) as ShiprocketProviderService;
 
         const { status, data, message } = await shipRocket.generateLabel(
+            fulfillmentId,
             shipmentIds
         );
 
@@ -72,14 +74,15 @@ export const generateLabel = async (req, res) => {
 
 export const generateInvoice = async (req, res) => {
     try {
-        const { orderIds } = req.body;
+        const { orderIds, fulfillmentId } = req.body;
 
         const shipRocket = req.scope.resolve(
             "shiprocketProviderService"
         ) as ShiprocketProviderService;
 
         const { status, data, message } = await shipRocket.generateInvoice(
-            orderIds
+            orderIds,
+            fulfillmentId
         );
 
         if (!status) {
@@ -94,14 +97,15 @@ export const generateInvoice = async (req, res) => {
 
 export const shipmentPickUp = async (req, res) => {
     try {
-        const { shipmentIds } = req.body;
+        const { shipmentIds, fulfillmentId } = req.body;
 
         const shipRocket = req.scope.resolve(
             "shiprocketProviderService"
         ) as ShiprocketProviderService;
 
         const { status, data, message } = await shipRocket.shipmentPickUp(
-            shipmentIds
+            shipmentIds,
+            fulfillmentId
         );
 
         if (!status) {
@@ -138,14 +142,15 @@ export const generateManifests = async (req, res) => {
 
 export const printManifests = async (req, res) => {
     try {
-        const { orderIds } = req.body;
+        const { orderIds, fulfillmentId } = req.body;
 
         const shipRocket = req.scope.resolve(
             "shiprocketProviderService"
         ) as ShiprocketProviderService;
 
         const { status, data, message } = await shipRocket.printManifests(
-            orderIds
+            orderIds,
+            fulfillmentId
         );
 
         if (!status) {
@@ -160,14 +165,15 @@ export const printManifests = async (req, res) => {
 
 export const deleteOrder = async (req, res) => {
     try {
-        const { orderIds } = req.body;
+        const { orderIds, fulfillmentId } = req.body;
 
         const shipRocket = req.scope.resolve(
             "shiprocketProviderService"
         ) as ShiprocketProviderService;
 
         const { status, data, message } = await shipRocket.deleteOrder(
-            orderIds
+            orderIds,
+            fulfillmentId
         );
 
         if (!status) {

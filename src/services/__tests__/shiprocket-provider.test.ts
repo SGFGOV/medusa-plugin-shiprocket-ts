@@ -114,7 +114,8 @@ describe("ShiprocketFullfillmentService", () => {
                 shiprocket_url: "https://apiv2.shiprocket.in/v1/external",
                 channelId: shiprocketChannelID,
                 shiprocket_username: shiprocketUserName,
-                shiprocket_password: shiprocketPassword
+                shiprocket_password: shiprocketPassword,
+                enable_next_day_pickup: true
             }
         );
     });
@@ -339,7 +340,8 @@ describe("ShiprocketFullfillmentService", () => {
                 expect(r.status).toBe(true);
                 const response = r.data as CreateOrderResponse;
                 const deleteResult = await shiprocket.deleteOrder(
-                    response.order_id
+                    response.order_id,
+                    r.data.fulfillment_id
                 );
                 expect(deleteResult.status).toBe(true);
             });
