@@ -56,8 +56,7 @@ import {
     QuickReturnRequest
 } from "../types/quick-response";
 import { ShipmentCreatedEvent } from "../subscribers";
-import { incDay } from "utils";
-import { hash } from "scrypt";
+import { incDay } from "../utils";
 
 export type ShiprocketResult = {
     status: boolean;
@@ -195,10 +194,19 @@ class ShiprocketProviderService extends FulfillmentService {
             baseURL:
                 this.options.shiprocket_url ??
                 "https://apiv2.shiprocket.in/v1/external",
-            headers: {
-                "content-type": "application/json",
-                "Authorization": `Bearer ${this.token}`
-            }
+            headers:
+                process.env.NODE_ENV != "test"
+                    ? {
+                          "content-type": "application/json",
+                          "Authorization": `Bearer ${this.token}`,
+                          "connection": "keep-alive"
+                      }
+                    : {
+                          "content-type": "application/json",
+                          "Authorization": `Bearer ${this.token}`,
+                          "User-Agent": "PostmanRuntime/7.31.10",
+                          "connection": "keep-alive"
+                      }
         });
     }
 
@@ -331,9 +339,12 @@ class ShiprocketProviderService extends FulfillmentService {
 
     async generateAllAwb(
         fulfillment_id: string,
-        shiprocketData: ShiprocketResult[]
+        shiprocketData: ShiprocketResult[] | ShiprocketResult
     ): Promise<ShiprocketResult[]> {
-        const shiprocketCreateResponse = shiprocketData.map(
+        const shiprocketDataToProcess = Array.isArray(shiprocketData)
+            ? shiprocketData
+            : [shiprocketData];
+        const shiprocketCreateResponse = shiprocketDataToProcess.map(
             async (sr, index) => {
                 const createResponse = sr.data as CreateOrderResponse;
                 try {
@@ -417,6 +428,7 @@ class ShiprocketProviderService extends FulfillmentService {
                 message: "Auth token fetched!",
                 data: result.data
             };
+            return response;
         } catch (error) {
             return {
                 status: false,
@@ -483,7 +495,7 @@ class ShiprocketProviderService extends FulfillmentService {
         }
     }
 
-    async requestCreateOrder(
+    private async requestCreateOrder(
         request: CreateOrderRequestOptions
     ): Promise<ShiprocketResult> {
         try {
@@ -642,6 +654,7 @@ class ShiprocketProviderService extends FulfillmentService {
                 data,
                 message: "Pickup request placed successfully!"
             };
+            return response;
         } catch (error) {
             const message = this.parseError(error);
 
@@ -651,13 +664,32 @@ class ShiprocketProviderService extends FulfillmentService {
 
     async generateAWB(
         fulfillment_id: string,
-        shipment_id: string
+        shipment_id: string,
+        courier_id?: string,
+        status?: string
     ): Promise<ShiprocketResult> {
+        const courierSelection = courier_id
+            ? {
+                  shipment_id,
+                  courier_id
+              }
+            : {
+                  shipment_id
+              };
+
+        const requestData = status
+            ? {
+                  ...courierSelection,
+                  status
+              }
+            : {
+                  ...courierSelection
+              };
         try {
-            const result = await this.axiosInstance.post("courier/assign/awb", {
-                shipment_id,
-                courier_id: ""
-            });
+            const result = await this.axiosInstance.post(
+                "courier/assign/awb",
+                requestData
+            );
 
             const { status, data } = this.validateData(result);
 
@@ -876,7 +908,10 @@ class ShiprocketProviderService extends FulfillmentService {
         }
     }
 
-    async generateManifests(shipment_id: string): Promise<ShiprocketResult> {
+    async generateManifests(
+        shipment_id: string,
+        fulfillment_id: string
+    ): Promise<ShiprocketResult> {
         try {
             const result = await this.axiosInstance.post("manifests/generate", {
                 shipment_id
@@ -899,6 +934,9 @@ class ShiprocketProviderService extends FulfillmentService {
                 data: manifest_url,
                 message: "Manifest generated successfully!"
             };
+            await this.updateFulfillment(fulfillment_id, response, "manifest");
+
+            return response;
         } catch (error) {
             const message = this.parseError(error);
 
@@ -1870,7 +1908,12 @@ class ShiprocketProviderService extends FulfillmentService {
             retry ? { ...data, retry } : data
         );
 
-        await this.updateFulfillment(fulfillment_id, result, "pickup");
+        await this.updateFulfillment(
+            fulfillment_id,
+            result,
+            "pickup",
+            shipment_id
+        );
 
         return result;
     };
@@ -1958,6 +2001,7 @@ class ShiprocketProviderService extends FulfillmentService {
                 data,
                 message: "Request Executed Successfully"
             };
+            return response;
         } catch (error) {
             const message = this.parseError(error);
 
@@ -1981,6 +2025,7 @@ class ShiprocketProviderService extends FulfillmentService {
                 data,
                 message: "Request Executed Successfully"
             };
+            return response;
         } catch (error) {
             const message = this.parseError(error);
 
@@ -2004,6 +2049,7 @@ class ShiprocketProviderService extends FulfillmentService {
                 data,
                 message: "Request Executed Successfully"
             };
+            return response;
         } catch (error) {
             const message = this.parseError(error);
 

@@ -346,5 +346,45 @@ describe("ShiprocketFullfillmentService", () => {
                 expect(deleteResult.status).toBe(true);
             });
         }, 90e3);
+        it("test forward full-chain", async () => {
+            const order = orders.testOrderIndiaDomestic;
+            const fulfillment = {
+                location_id: IdMap.getId("test-location"),
+                provider_id: "shiprocket",
+                id: IdMap.getId("test-fulfillment")
+            } as any;
+            const result = await shiprocket.createFulfillment(
+                {
+                    id: IdMap.getId(shiprocket.fulfillmentTypes[0]),
+                    shipping_option_id: shiprocket.fulfillmentTypes[0]
+                } as any,
+                order.items.map((item) => {
+                    const fulfillmentItem: FulfillmentItem = {
+                        fulfillment_id: fulfillment.id,
+                        item_id: item.id,
+                        fulfillment: fulfillment,
+                        item: item as any,
+                        quantity: item.quantity
+                    };
+                    return fulfillmentItem;
+                }),
+                order as any,
+                fulfillment
+            );
+            const forwardingResult = await shiprocket.generateAllAwb(
+                IdMap.getId("test-fulfillment"),
+                result
+            );
+
+            forwardingResult.map(async (r: ShiprocketResult, index) => {
+                expect(r.status).toBe(true);
+                const response = r.data as CreateOrderResponse;
+                const deleteResult = await shiprocket.deleteOrder(
+                    response.order_id,
+                    result[index].data.fulfillment_id
+                );
+                expect(deleteResult.status).toBe(true);
+            });
+        }, 90e3);
     });
 });
