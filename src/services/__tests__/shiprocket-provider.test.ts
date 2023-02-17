@@ -43,6 +43,7 @@ const mock = {
     userService: jest.fn(),
     totalsService: jest.fn(),
     shippingProfileService: jest.fn(),
+    fulfillmentService: jest.fn(),
     lineItemService: jest.fn(),
     fulfillmentProviderService: jest.fn(),
     fulfillmentRepository: MockRepository(),
@@ -108,7 +109,8 @@ describe("ShiprocketFullfillmentService", () => {
                 claimService: mock.claimService as any,
                 swapService: mock.swapService as any,
                 userService: mock.userService as any,
-                stockLocationService: mock.stockLocationService as any
+                stockLocationService: mock.stockLocationService as any,
+                fulfillmentService: mock.fulfillmentService as any
             },
             {
                 shiprocket_url: "https://apiv2.shiprocket.in/v1/external",
@@ -375,7 +377,7 @@ describe("ShiprocketFullfillmentService", () => {
                 IdMap.getId("test-fulfillment"),
                 result
             );
-
+            expect(forwardingResult.length).toBeTruthy();
             forwardingResult.map(async (r: ShiprocketResult, index) => {
                 expect(r.status).toBe(true);
                 const response = r.data as CreateOrderResponse;

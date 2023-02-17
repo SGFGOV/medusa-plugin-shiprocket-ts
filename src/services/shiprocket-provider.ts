@@ -73,6 +73,7 @@ export interface ShiprocketServiceParams {
     shippingProfileService: ShippingProfileService;
     lineItemService: LineItemService;
     fulfillmentProviderService: FulfillmentProviderService;
+    fulfillmentService: FulfillmentService;
     fulfillmentRepository: typeof FulfillmentRepository;
     trackingLinkRepository: typeof TrackingLinkRepository;
     lineItemRepository: typeof LineItemRepository;
@@ -105,7 +106,6 @@ class ShiprocketProviderService extends FulfillmentService {
     options: ShiprocketOptions;
     eventBusService: EventBusService;
 
-    public transactionManager: EntityManager;
     tokenRefreshService: JobSchedulerService;
     axiosAuthInstance: AxiosInstance;
     axiosInstance: AxiosInstance;
@@ -124,19 +124,19 @@ class ShiprocketProviderService extends FulfillmentService {
     orderService: OrderService;
     claimService: ClaimService;
     swapService: SwapService;
-    manager: EntityManager;
     userService: UserService;
     user: string;
+    fulfillmentService: FulfillmentService;
     constructor(
         container: ShiprocketServiceParams,
         options: ShiprocketOptions
     ) {
         super();
+        this.manager_ = container.manager;
         this.logger = container.logger;
         this.eventBusService = container.eventBusService;
         this.options = options;
         this.tokenRefreshService = container.jobSchedulerService;
-        this.manager = container.manager;
         this.eventBusService = container.eventBusService;
         this.totalsService_ = container.totalsService;
         this.shippingProfileService_ = container.shippingProfileService;
@@ -146,6 +146,7 @@ class ShiprocketProviderService extends FulfillmentService {
         this.fulfillmentRepository_ = container.fulfillmentRepository;
         this.userService = container.userService;
         this.stockLocationService = container.stockLocationService;
+        this.fulfillmentService = container.fulfillmentService;
 
         this.trackingLinkRepository_ = container.trackingLinkRepository;
         this.lineItemRepository_ = container.lineItemRepository;
@@ -213,7 +214,7 @@ class ShiprocketProviderService extends FulfillmentService {
     withTransaction(): this {
         const cloned = new ShiprocketProviderService(
             {
-                manager: this.transactionManager ?? this.manager,
+                manager: this.transactionManager_ ?? this.manager_,
                 eventBusService: this.eventBusService,
                 totalsService: this.totalsService_,
                 shippingProfileService: this.shippingProfileService_,
@@ -230,12 +231,13 @@ class ShiprocketProviderService extends FulfillmentService {
                 claimService: this.claimService,
                 swapService: this.swapService,
                 userService: this.userService,
-                stockLocationService: this.stockLocationService
+                stockLocationService: this.stockLocationService,
+                fulfillmentService: this.fulfillmentService
             },
             this.options
         );
 
-        cloned.transactionManager = this.transactionManager;
+        cloned.transactionManager_ = this.transactionManager_;
 
         return cloned as this;
     }
@@ -257,9 +259,9 @@ class ShiprocketProviderService extends FulfillmentService {
                             shipmentEvent.fulfillment_id
                         );
                         const shiprocketData =
-                            fulfillment.data as unknown as ShiprocketResult[];
+                            fulfillment?.data as unknown as ShiprocketResult[];
                         const shiprocketAwbResponse = await this.generateAllAwb(
-                            fulfillment.id,
+                            fulfillment?.id,
                             shiprocketData
                         );
                         await Promise.all(shiprocketAwbResponse);
@@ -297,16 +299,17 @@ class ShiprocketProviderService extends FulfillmentService {
                     const fulfillment = await fulfillmentRepository.findOne(
                         fulfillment_id
                     );
-                    const shippings = (
-                        fulfillment.data as unknown as ShiprocketResult[]
-                    ).filter((s) => {
-                        return s?.data?.shipment_id == shipment_id;
-                    });
+                    const shippings =
+                        (
+                            fulfillment?.data as unknown as ShiprocketResult[]
+                        )?.filter((s) => {
+                            return s?.data?.shipment_id == shipment_id;
+                        }) ?? [];
 
-                    if (!shippings[0]) {
+                    if (!shippings || !shippings[0]) {
                         shippings.push({
                             status: true,
-                            data: undefined,
+                            data: {},
                             message: ""
                         });
                     }
@@ -352,6 +355,9 @@ class ShiprocketProviderService extends FulfillmentService {
                         fulfillment_id,
                         createResponse.shipment_id.toString()
                     );
+                    if (!awb.data) {
+                        throw new Error("Airway bill generation error");
+                    }
                     const awbAndShipmentData = shiprocketData[index];
                     awbAndShipmentData["awb"] = (
                         awb.data as AssignAwbResponse
@@ -385,6 +391,11 @@ class ShiprocketProviderService extends FulfillmentService {
                     return sr;
                 } catch (e) {
                     this.parseError(e);
+                    const response = {
+                        status: false,
+                        data: undefined,
+                        message: "AWB Creation error"
+                    };
                 }
             }
         );
@@ -408,7 +419,7 @@ class ShiprocketProviderService extends FulfillmentService {
     }
 
     setTransactionManager(transactionManager: EntityManager): this {
-        this.transactionManager = transactionManager;
+        this.transactionManager_ = transactionManager;
         return this;
     }
 
@@ -495,7 +506,8 @@ class ShiprocketProviderService extends FulfillmentService {
         }
     }
 
-    private async requestCreateOrder(
+    async requestCreateOrder(
+        fulfillment_id: string,
         request: CreateOrderRequestOptions
     ): Promise<ShiprocketResult> {
         try {
@@ -577,9 +589,14 @@ class ShiprocketProviderService extends FulfillmentService {
             const response = {
                 status: true,
                 data,
-                message: "Pickup request placed successfully!"
+                message: "Order created successfully!"
             };
-
+            await this.updateFulfillment(
+                fulfillment_id,
+                response,
+                "shipment",
+                response.data.shipment_id
+            );
             return response;
         } catch (error) {
             const message = this.parseError(error);
@@ -748,7 +765,7 @@ class ShiprocketProviderService extends FulfillmentService {
                     );
                     const shippings =
                         fulfillment?.data as unknown as ShiprocketResult[];
-                    shippings.filter((s) => s.data.shipping_id == shipment_id);
+                    shippings?.filter((s) => s.data.shipping_id == shipment_id);
                     return shippings;
                 } catch (e) {
                     this.parseError(e);
@@ -909,12 +926,15 @@ class ShiprocketProviderService extends FulfillmentService {
     }
 
     async generateManifests(
-        shipment_id: string,
+        shipment_id: string | string[],
         fulfillment_id: string
     ): Promise<ShiprocketResult> {
+        const requestData = Array.isArray(shipment_id)
+            ? shipment_id
+            : [shipment_id];
         try {
             const result = await this.axiosInstance.post("manifests/generate", {
-                shipment_id
+                shipment_id: requestData
             });
 
             const { status, data } = this.validateData(result);
@@ -1176,13 +1196,13 @@ class ShiprocketProviderService extends FulfillmentService {
             address_2: order.billing_address.address_2
         };
         const locations = items.map(
-            (item) => item.fulfillment?.location_id ?? fulfillment.location_id
+            (item) => item.fulfillment?.location_id ?? fulfillment?.location_id
         );
         const result = locations.map(async (pickUpLocation) => {
             const itemsAtLocation = items.filter(
                 (item) =>
                     (item.fulfillment?.location_id ??
-                        fulfillment.location_id) == pickUpLocation
+                        fulfillment?.location_id) == pickUpLocation
             );
 
             return await this.createOrderAtLocation(
@@ -1205,7 +1225,7 @@ class ShiprocketProviderService extends FulfillmentService {
     ): Promise<Fulfillment[]> {
         const result = order.fulfillments.map(async (fulfillment) => {
             const stockLocation = await this.stockLocationService.retrieve(
-                fulfillment.location_id
+                fulfillment?.location_id
             );
 
             const delivery_country_code = order.shipping_address?.country_code;
@@ -1300,7 +1320,7 @@ class ShiprocketProviderService extends FulfillmentService {
         try {
             const medusaStockLocation =
                 await this.stockLocationService.retrieve(
-                    fulfillment.location_id
+                    fulfillment?.location_id
                 );
             try {
                 const createLocationResult = await this.createPickUpLocation({
@@ -1407,7 +1427,7 @@ class ShiprocketProviderService extends FulfillmentService {
             channel_id: parseInt(this.options.channelId),
             order_id: order.id,
             order_date: order.created_at.toISOString(),
-            comment: `Shipping ${order.id} from ${fulfillment.location_id}`,
+            comment: `Shipping ${order.id} from ${fulfillment?.location_id}`,
             billing_address,
             shipping_is_billing: false,
             shipping_address: {
@@ -1439,15 +1459,17 @@ class ShiprocketProviderService extends FulfillmentService {
             }
         };
         const response = await this.requestCreateOrder(
+            fulfillment?.id,
             createOrderRequestOptions
         );
         fulfillment["shiprocket_order_id"] = response.data.order_id;
+        fulfillment["shiprocket_shipment_id"] = response.data.shipment_id;
         return response;
     }
 
     cancelFulfillment(fulfillment: Fulfillment): Promise<ShiprocketResult> {
         return this.postShiprocketResultOfAction("/orders/cancel", {
-            ids: [fulfillment.metadata.shiprocket_order_id]
+            ids: [fulfillment?.metadata.shiprocket_order_id]
         });
     }
     // eslint-disable-next-line valid-jsdoc
@@ -2061,7 +2083,10 @@ class ShiprocketProviderService extends FulfillmentService {
 const paramUrl = (options?: object): string => {
     if (options && typeof options == "object") {
         const params = Object.entries(options)
-            .map(([key, vlaue]) => `${key}=${vlaue}`)
+            .map(([key, value]) =>
+                value != undefined ? `${key}=${value}` : undefined
+            )
+            .filter((s) => s != undefined)
             .join("&");
         return params;
     }

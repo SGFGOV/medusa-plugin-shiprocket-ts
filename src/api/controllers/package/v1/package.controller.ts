@@ -12,7 +12,10 @@ export const requestCreateOrder = async (
             "shiprocketProviderService"
         ) as ShiprocketProviderService;
 
+        const { fulfillment_id } = req.body;
+
         const { status, data, message } = await shipRocket.requestCreateOrder(
+            fulfillment_id,
             req.order
         );
 
@@ -120,14 +123,15 @@ export const shipmentPickUp = async (req, res) => {
 
 export const generateManifests = async (req, res) => {
     try {
-        const { shipmentIds } = req.body;
+        const { shipmentIds, fulfillment_id } = req.body;
 
         const shipRocket = req.scope.resolve(
             "shiprocketProviderService"
         ) as ShiprocketProviderService;
 
         const { status, data, message } = await shipRocket.generateManifests(
-            shipmentIds
+            shipmentIds,
+            fulfillment_id
         );
 
         if (!status) {

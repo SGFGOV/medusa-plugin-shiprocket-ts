@@ -10,7 +10,10 @@ export const quickPickupController = async (req: Request, res: Response) => {
         ) as ShiprocketProviderService;
 
         const { status, data, message } =
-            await shipRocket.postQuickCreateForward(req.body);
+            await shipRocket.postQuickCreateForward(
+                req.body.fulfillment_id,
+                req.body
+            );
 
         if (!status) {
             throw new Error(JSON.stringify({ code: 409, message }));
